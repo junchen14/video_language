@@ -16,20 +16,36 @@ class CootModel:
         self.cfg = cfg
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() and use_cuda else "cpu")
+
+
+        # video pooler
         self.net_video_pooler = Transformer(
             cfg.net_video_pooler, cfg.dataset.feature_dim)
         self.net_video_pooler = self.to_device_fn(self.net_video_pooler)
+
+        # video sequencer
+
         self.net_video_sequencer = Transformer(
             cfg.net_video_sequencer, cfg.net_video_pooler.output_dim)
         self.net_video_sequencer = self.to_device_fn(self.net_video_sequencer)
+
+        # text pooler
+
         self.net_text_pooler = Transformer(
             cfg.net_text_pooler, cfg.text_encoder.feature_dim)
         self.net_text_pooler = self.to_device_fn(self.net_text_pooler)
+
+        # video pooler
+
         self.net_text_sequencer = Transformer(
             cfg.net_text_sequencer, cfg.net_text_pooler.output_dim)
         self.net_text_sequencer = self.to_device_fn(self.net_text_sequencer)
         self.model_list = [self.net_video_pooler, self.net_video_sequencer,
                            self.net_text_pooler, self.net_text_sequencer]
+
+
+
+
 
     def encode_video(
             self, vid_frames, vid_frames_mask, vid_frames_len,
@@ -37,6 +53,23 @@ class CootModel:
         # print(vid_frames.shape, vid_frames_mask.shape, vid_frames_len.shape, clip_num.shape, clip_frames.shape,clip_frames_len.shape, clip_frames_mask.shape)
 
         # compute video context
+
+
+        '''
+
+
+
+        :param vid_frames:
+        :param vid_frames_mask:
+        :param vid_frames_len:
+        :param clip_num:
+        :param clip_frames:
+        :param clip_frames_len:
+        :param clip_frames_mask:
+        :return:
+        '''
+
+
         vid_context = self.net_video_pooler(
             vid_frames, vid_frames_mask, vid_frames_len, None)
         if self.cfg.net_video_sequencer.use_context:
@@ -50,7 +83,10 @@ class CootModel:
                 raise NotImplementedError
         else:
             vid_context_hidden = None
-
+        '''
+        first step: use a transformer to learn all the videos frames features
+        and do the attention pooling
+        '''
 
         clip_emb = self.net_video_pooler(
             clip_frames, clip_frames_mask, clip_frames_len, None)
@@ -73,9 +109,22 @@ class CootModel:
             clip_emb_lens[batch] = clip_len
             pointer += clip_len
 
+        '''
+        second step: feed all the clip featuers into a transformer model, and learn its features.
+        and also do the attention pooling
+        '''
+
+
+
         # compute video embedding
         vid_emb = self.net_video_sequencer(
             clip_emb_reshape, clip_emb_mask, clip_num, vid_context_hidden)
+
+        '''
+        third step: feed the video and clip features into antoher transformer, and learn the interaction between clips and videos
+        
+        '''
+
         return (vid_emb, clip_emb, vid_context,
                 clip_emb_reshape, clip_emb_mask, clip_emb_lens)
 
@@ -83,6 +132,18 @@ class CootModel:
             self, par_cap_vectors, par_cap_mask, par_cap_len,
             sent_num, sent_cap_vectors, sent_cap_mask, sent_cap_len):
         # compute paragraph context
+
+        '''
+
+        :param par_cap_vectors:
+        :param par_cap_mask:
+        :param par_cap_len:
+        :param sent_num:
+        :param sent_cap_vectors:
+        :param sent_cap_mask:
+        :param sent_cap_len:
+        :return:
+        '''
         par_context = self.net_text_pooler(
             par_cap_vectors, par_cap_mask, par_cap_len, None)
         if self.cfg.net_text_sequencer.use_context:
@@ -96,6 +157,11 @@ class CootModel:
                 raise NotImplementedError
         else:
             par_gru_hidden = None
+
+
+        '''
+        step1: learn the feature representations of the whole paragraph
+        '''
 
         # compute sentence embedding
         sent_emb = self.net_text_pooler(
@@ -119,9 +185,17 @@ class CootModel:
             sent_emb_lens[batch] = sent_len
             pointer += sent_len
 
+        '''
+        step 2: learn the feature representation of caption for each clip 
+        '''
+
         # compute paragraph embedding
         par_emb = self.net_text_sequencer(
             sent_emb_reshape, sent_emb_mask, sent_num, par_gru_hidden)
+
+        '''
+        step 3: learn the feature representation of the whole video
+        '''
         return (par_emb, sent_emb, par_context,
                 sent_emb_reshape, sent_emb_mask, sent_emb_lens)
 
@@ -217,6 +291,8 @@ class Transformer(nn.Module):
         self.input_norm = LayerNormalization(feature_dim)
         self.input_fc = None
         input_dim = feature_dim
+
+        #  input_fc is to linear transformer the feature into the hidden states
         if cfg.input_fc:
             self.input_fc = nn.Sequential(
                 nn.Linear(feature_dim, cfg.input_fc_output_dim), nn.GELU())
@@ -224,6 +300,7 @@ class Transformer(nn.Module):
         self.embedding = PositionalEncoding(
             input_dim, cfg.dropout, max_len=1000)
 
+        #  a tranformer layer to learn the interaction among different features
         self.tf = TransformerEncoder(
             cfg.num_layers, input_dim, cfg.num_heads, input_dim,
             cfg.dropout)
@@ -234,6 +311,8 @@ class Transformer(nn.Module):
                 cfg.atn_ctx_num_layers, input_dim, cfg.atn_ctx_num_heads,
                 input_dim, cfg.dropout)
 
+
+        # the feature pooling layer
         self.pooler = build_pooler(input_dim, cfg)
 
         init_network(self, 0.01)
